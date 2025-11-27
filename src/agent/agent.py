@@ -10,11 +10,12 @@ from agent.memory import InMemoryConversationMemory, MemoryMessage, to_claude_me
 from agent.prompts import SYSTEM_PROMPT
 from models.schemas import (
     AccommodationRequest,
-    AccommodationResponse,
+    
+    ChatLLMResponse,
     RouteRequest,
-    RouteResponse,
+    
     WeatherRequest,
-    WeatherResponse,
+    
 )
 from tools import accomodation, route, weather
 
@@ -40,6 +41,8 @@ class CyclingTripAgent:
         self.tool_specs = self._build_tool_specs()
         self.memory = InMemoryConversationMemory(max_messages=50)
 
+    
+
     def _schema(self, model_cls: Any) -> Dict[str, Any]:
         """
         Support both Pydantic v1 and v2 style schema generation.
@@ -60,17 +63,17 @@ class CyclingTripAgent:
         return [
             {
                 "name": "get_route",
-                "description": "Plan a multi-day cycling route between start and end points.",
+                "description": "Route planning tool that returns a realistic-looking multi-day cycling route based on a start location, end location, and desired daily distance. Use this when you need to break a trip into daily cycling segments with distances and brief notes; do not use it for walking, driving, or non-cycling contexts. Parameters: `start` and `end` define the trip endpoints; `daily_distance_km` sets target distance per day and influences how many days/segments are produced. Limitations: no turn-by-turn directions. It does not return elevation, surfaces, or safety constraints—only day-level segments with start/end and notes.",
                 "input_schema": self._schema(RouteRequest),
             },
             {
                 "name": "find_accommodation",
-                "description": "Find places to stay near a segment end point.",
+                "description": "Accommodation lookup tool that returns plausible lodging options near a segment end point for a given day. Use this when you need hostels/hotels/BnBs along the cycling route; do not use it for booking or payment. Parameters: `location` is the target area for the overnight stop; `day` is the trip day, which may influence availability. Limitations: prices are approximate; it does not return booking links or confirm actual rooms. Outputs include option name, price, type, availability, and notes (e.g., bike storage, breakfast).",
                 "input_schema": self._schema(AccommodationRequest),
             },
             {
                 "name": "get_weather",
-                "description": "Get the weather outlook for a location on a given day.",
+                "description": "Weather forecast tool that returns plausible conditions for a given location and day. Use this to provide day-level outlooks (conditions, highs/lows, precipitation chance) for cycling plans. Parameters: `location` sets the area to forecast; `day` is the trip day index used to vary conditions. Limitations: no hourly breakdown, and no wind/elevation-specific effects; it returns only day-level summaries. Outputs include conditions, high/low temperatures, and an estimated precipitation chance.",
                 "input_schema": self._schema(WeatherRequest),
             },
         ]
@@ -83,7 +86,7 @@ class CyclingTripAgent:
     ) -> Any:
         if not self.client:
             raise RuntimeError("Anthropic client not configured")
-        model = os.getenv("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
+        model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
         return await asyncio.to_thread(
             self.client.messages.create,
             model=model,
@@ -93,6 +96,35 @@ class CyclingTripAgent:
             tool_choice={"type": "auto"},
             system=system,
         )
+
+    async def _call_llm_structured(
+        self,
+        messages: List[Dict[str, Any]],
+        system: Optional[str],
+        conversation_id: str,
+    ) -> Optional[ChatLLMResponse]:
+        if not self.client:
+            raise RuntimeError("Anthropic client not configured")
+        model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
+        beta = os.getenv("ANTHROPIC_STRUCTURED_BETA", "structured-outputs-2025-11-13")
+        try:
+            resp = await asyncio.to_thread(
+                self.client.beta.messages.parse,
+                model=model,
+                max_tokens=512,
+                messages=messages,
+                system=system,
+                output_format=ChatLLMResponse,
+                betas=[beta],
+            )
+            return resp.parsed_output
+        except Exception as exc:
+            log_event(
+                conversation_id,
+                "structured_parse_error",
+                {"error": str(exc)},
+            )
+            return None
 
     async def _execute_tool(self, call: Dict[str, Any]) -> Dict[str, Any]:
         name = call.get("name")
@@ -113,9 +145,11 @@ class CyclingTripAgent:
         message, execute any requested tools, and return the assistant reply
         plus the tool outputs used to form the plan.
         """
+        # 1) Build context and user message
         prior = self.memory.get_history(conversation_id)
         prior_state = self.memory.get_state(conversation_id)
         last_plan_summary = prior_state.get("last_plan_summary")
+        
         user_msg = MemoryMessage(
             role="user", content=[{"type": "text", "text": user_message}]
         )
@@ -127,9 +161,8 @@ class CyclingTripAgent:
                     "content": [{"type": "text", "text": f"Previous plan summary:\n{last_plan_summary}"}],
                 }
             )
-        messages.append(
-            {"role": user_msg.role, "content": user_msg.content}
-        )
+        
+        messages.append({"role": user_msg.role, "content": user_msg.content})
         log_event(
             conversation_id,
             "user_message",
@@ -137,16 +170,17 @@ class CyclingTripAgent:
                 "message": user_message,
                 "history_count": len(prior),
                 "has_last_plan_summary": bool(last_plan_summary),
+                
             },
         )
 
+        # 2) First pass: ask model which tools to use
         first_response = await self._call_llm(
             messages=messages, tools=self.tool_specs, system=SYSTEM_PROMPT
         )
 
-        tool_calls = [
-            item for item in first_response.content if self._block_type(item) == "tool_use"
-        ]
+        # 3) Execute requested tools
+        tool_calls = [item for item in first_response.content if self._block_type(item) == "tool_use"]
         log_event(
             conversation_id,
             "tool_calls",
@@ -162,9 +196,8 @@ class CyclingTripAgent:
             },
         )
 
-        tool_results_payload: List[Dict[str, Any]] = []
         plan: Dict[str, Any] = {}
-
+        tool_results_payload: List[Dict[str, Any]] = []
         for call in tool_calls:
             call_name = self._block_attr(call, "name")
             call_id = self._block_attr(call, "id")
@@ -186,31 +219,54 @@ class CyclingTripAgent:
                 {"name": call_name, "id": call_id, "output": output},
             )
 
-        # If tools were called, send results back for a final answer.
+        # 4) Build final message list for structured answer
+        final_messages: List[Dict[str, Any]] = messages
         if tool_results_payload:
             messages.append({"role": "assistant", "content": first_response.content})
             messages.append({"role": "user", "content": tool_results_payload})
-            final_response = await self._call_llm(
-                messages=messages, tools=self.tool_specs, system=SYSTEM_PROMPT
-            )
-            content_blocks = [
-                self._block_attr(block, "text") or ""
-                for block in final_response.content
-                if self._block_type(block) == "text"
-            ]
-            reply_text = "".join(content_blocks).strip()
-        else:
-            # No tools requested; use the first response text directly.
-            content_blocks = [
-                self._block_attr(block, "text") or ""
-                for block in first_response.content
-                if self._block_type(block) == "text"
-            ]
-            reply_text = "".join(content_blocks).strip()
+            final_messages = messages
 
+        # 5) Try structured output
+        structured = await self._call_llm_structured(
+            messages=final_messages, system=SYSTEM_PROMPT, conversation_id=conversation_id
+        )
+
+        # 6) Fallback plain text from first response (if no structured)
+        reply_text = ""
+        questions: Optional[List[str]] = None
+        if structured:
+            reply_text = structured.reply or ""
+            if structured.plan:
+                plan = structured.plan
+            questions = structured.questions
+        else:
+            fallback_text = "".join(
+                [
+                    self._block_attr(block, "text") or ""
+                    for block in first_response.content
+                    if self._block_type(block) == "text"
+                ]
+            ).strip()
+            reply_text = fallback_text
+
+        # 7) If nothing usable returned, synthesize clarifying qs
+        if not plan and not tool_calls and not questions:
+            questions = [
+                "What are your start and end locations?",
+                "How many kilometers per day would you like to ride?",
+                "What dates are you targeting?",
+                "Any accommodation preferences or budget?",
+                "Any weather conditions to avoid?",
+            ]
+            if not reply_text:
+                reply_text = "I need a few details before planning. Please clarify."
+
+        # 8) Guarantee non-empty reply
         if not reply_text:
             if plan:
                 reply_text = "Here are the tool results:\n" + json.dumps(plan, indent=2)
+            elif questions:
+                reply_text = "Could you clarify a few points?"
             else:
                 reply_text = "I wasn't able to produce a reply. Please try again or provide more detail."
 
@@ -228,11 +284,16 @@ class CyclingTripAgent:
         log_event(
             conversation_id,
             "assistant_reply",
-            {"reply": reply_text, "plan_keys": list(plan.keys())},
+            {
+                "reply": reply_text,
+                "plan_keys": list(plan.keys()),
+                "questions": questions or [],
+            },
         )
 
         return {
             "conversation_id": conversation_id,
             "reply": reply_text,
             "plan": plan or None,
+            "questions": questions,
         }

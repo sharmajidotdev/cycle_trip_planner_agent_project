@@ -53,3 +53,9 @@ class WeatherDaily(BaseModel):
 
 class WeatherResponse(BaseModel):
     daily: list[WeatherDaily]
+
+
+class ChatLLMResponse(BaseModel):
+    reply: str | None = None
+    plan: dict | None = None
+    questions: list[str] | None = None
