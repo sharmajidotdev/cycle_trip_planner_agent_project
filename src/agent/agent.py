@@ -4,6 +4,7 @@ import os
 from typing import Any, Callable, Dict, List, Optional
 
 from anthropic import Anthropic
+from pydantic import ValidationError
 
 from agent.logger import log_event
 from agent.memory import InMemoryConversationMemory, MemoryMessage, to_claude_messages
@@ -213,7 +214,38 @@ class CyclingTripAgent:
                 call_input = self._block_attr(call, "input") or {}
                 if not call_name:
                     continue
-                output = await self._execute_tool({"name": call_name, "input": call_input})
+                try:
+                    output = await self._execute_tool({"name": call_name, "input": call_input})
+                except ValidationError as exc:
+                    error_msg = f"Validation failed for {call_name}: {exc}"
+                    log_event(
+                        conversation_id,
+                        "tool_validation_error",
+                        {"name": call_name, "id": call_id, "error": str(exc), "input": call_input},
+                    )
+                    tool_results_payload.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": call_id,
+                            "content": [{"type": "text", "text": error_msg}],
+                        }
+                    )
+                    continue
+                except Exception as exc:  # catch-all to avoid crashing the loop
+                    error_msg = f"Execution failed for {call_name}: {exc}"
+                    log_event(
+                        conversation_id,
+                        "tool_execution_error",
+                        {"name": call_name, "id": call_id, "error": str(exc), "input": call_input},
+                    )
+                    tool_results_payload.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": call_id,
+                            "content": [{"type": "text", "text": error_msg}],
+                        }
+                    )
+                    continue
                 plan[call_name] = output
                 tool_results_payload.append(
                     {
