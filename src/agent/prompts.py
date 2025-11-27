@@ -15,6 +15,7 @@ Tool usage guidance:
 - Route tool: requires start, end, and daily_distance_km. Use reasonable defaults only if user agrees.
 - Accommodation tool: call for the end location of each day (or the segment endpoints from the route output).
 - Weather tool: call for locations/days relevant to the plan.
+- If you cannot directly call a tool but want to indicate which should run next, add their names to the structured `tool_calls` field alongside any clarifying questions.
 - If a tool fails or data is missing, state that briefly and proceed with best-effort guidance.
 
 Response formatting:

@@ -174,76 +174,92 @@ class CyclingTripAgent:
             },
         )
 
-        # 2) First pass: ask model which tools to use
-        first_response = await self._call_llm(
+        # 2) Repeatedly call tools until the model stops requesting them (or max rounds reached)
+        plan: Dict[str, Any] = {}
+        tool_round = 0
+        tool_calls: List[Dict[str, Any]] = []
+        max_rounds = 4  # safeguard to avoid infinite loops
+        last_response = await self._call_llm(
             messages=messages, tools=self.tool_specs, system=SYSTEM_PROMPT
         )
 
-        # 3) Execute requested tools
-        tool_calls = [item for item in first_response.content if self._block_type(item) == "tool_use"]
-        log_event(
-            conversation_id,
-            "tool_calls",
-            {
-                "requested": [
-                    {
-                        "id": self._block_attr(call, "id"),
-                        "name": self._block_attr(call, "name"),
-                        "input": self._block_attr(call, "input"),
-                    }
-                    for call in tool_calls
-                ]
-            },
-        )
-
-        plan: Dict[str, Any] = {}
-        tool_results_payload: List[Dict[str, Any]] = []
-        for call in tool_calls:
-            call_name = self._block_attr(call, "name")
-            call_id = self._block_attr(call, "id")
-            call_input = self._block_attr(call, "input") or {}
-            if not call_name:
-                continue
-            output = await self._execute_tool({"name": call_name, "input": call_input})
-            plan[call_name] = output
-            tool_results_payload.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": call_id,
-                    "content": [{"type": "text", "text": json.dumps(output)}],
-                }
-            )
+        while tool_round < max_rounds:
+            tool_calls = [
+                item for item in last_response.content if self._block_type(item) == "tool_use"
+            ]
             log_event(
                 conversation_id,
-                "tool_result",
-                {"name": call_name, "id": call_id, "output": output},
+                "tool_calls",
+                {
+                    "requested": [
+                        {
+                            "id": self._block_attr(call, "id"),
+                            "name": self._block_attr(call, "name"),
+                            "input": self._block_attr(call, "input"),
+                        }
+                        for call in tool_calls
+                    ]
+                },
             )
 
-        # 4) Build final message list for structured answer
-        final_messages: List[Dict[str, Any]] = messages
-        if tool_results_payload:
-            messages.append({"role": "assistant", "content": first_response.content})
-            messages.append({"role": "user", "content": tool_results_payload})
-            final_messages = messages
+            if not tool_calls:
+                break
 
-        # 5) Try structured output
+            tool_round += 1
+            tool_results_payload: List[Dict[str, Any]] = []
+            for call in tool_calls:
+                call_name = self._block_attr(call, "name")
+                call_id = self._block_attr(call, "id")
+                call_input = self._block_attr(call, "input") or {}
+                if not call_name:
+                    continue
+                output = await self._execute_tool({"name": call_name, "input": call_input})
+                plan[call_name] = output
+                tool_results_payload.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": call_id,
+                        "content": [{"type": "text", "text": json.dumps(output)}],
+                    }
+                )
+                log_event(
+                    conversation_id,
+                    "tool_result",
+                    {"name": call_name, "id": call_id, "output": output},
+                )
+
+            messages.append({"role": "assistant", "content": last_response.content})
+            messages.append({"role": "user", "content": tool_results_payload})
+            last_response = await self._call_llm(
+                messages=messages, tools=self.tool_specs, system=SYSTEM_PROMPT
+            )
+
+        # 3) Build final message list for structured answer
+        final_messages: List[Dict[str, Any]] = messages + [
+            {"role": "assistant", "content": last_response.content}
+        ]
+
+        # 4) Try structured output
         structured = await self._call_llm_structured(
             messages=final_messages, system=SYSTEM_PROMPT, conversation_id=conversation_id
         )
-
-        # 6) Fallback plain text from first response (if no structured)
+        print("Structured output:", structured)
+        
+        # 5) Fallback plain text from last response (if no structured)
         reply_text = ""
         questions: Optional[List[str]] = None
+        tool_calls_structured: Optional[List[str]] = None
         if structured:
             reply_text = structured.reply or ""
             if structured.plan:
                 plan = structured.plan
             questions = structured.questions
+            tool_calls_structured = structured.tool_calls
         else:
             fallback_text = "".join(
                 [
                     self._block_attr(block, "text") or ""
-                    for block in first_response.content
+                    for block in last_response.content
                     if self._block_type(block) == "text"
                 ]
             ).strip()
@@ -262,11 +278,12 @@ class CyclingTripAgent:
                 reply_text = "I need a few details before planning. Please clarify."
 
         # 8) Guarantee non-empty reply
+        
         if not reply_text:
-            if plan:
-                reply_text = "Here are the tool results:\n" + json.dumps(plan, indent=2)
-            elif questions:
+            if questions:
                 reply_text = "Could you clarify a few points?"
+            elif plan:
+                reply_text = "Here is a plan, let me know if you want modifications :\n"
             else:
                 reply_text = "I wasn't able to produce a reply. Please try again or provide more detail."
 
@@ -288,6 +305,7 @@ class CyclingTripAgent:
                 "reply": reply_text,
                 "plan_keys": list(plan.keys()),
                 "questions": questions or [],
+                "tool_calls_structured": tool_calls_structured or [],
             },
         )
 
@@ -296,4 +314,5 @@ class CyclingTripAgent:
             "reply": reply_text,
             "plan": plan or None,
             "questions": questions,
+            "tool_calls": tool_calls_structured,
         }
