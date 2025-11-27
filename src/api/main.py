@@ -27,6 +27,7 @@ class ChatResponse(BaseModel):
     conversation_id: str
     reply: str
     plan: dict | None = None
+    questions: list[str] | None = None
 
 
 @app.post("/chat", response_model=ChatResponse)
