@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+# Virtual environments
+.venv/
+.ENV/
+
+# IDEs
+.vscode/
+.idea/
+
+# Python wheel files
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Cython debug symbols
+cython_debug/
+
+# FastAPI
+instance/
+instance/*
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# Local config files
+*.env
+*.env.*
+config.py
+
+# pytest
+.cache/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Coverage reports
+*.coveragerc
+.coverage
+.coverage.*
+
+# pytype
+.pytype/
+
+# AI model checkpoints (if you're using HuggingFace or other model storage)
+model/
+
+# Logs
+logs/
+*.log
+
+# Databases
+*.sqlite3
+*.db
+
+# Docker
+*.dockerignore
+Dockerfile
+docker-compose.yml
+
+# Misc
+*.swp
+*~
