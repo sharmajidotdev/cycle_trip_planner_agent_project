@@ -114,16 +114,30 @@ class CyclingTripAgent:
         plus the tool outputs used to form the plan.
         """
         prior = self.memory.get_history(conversation_id)
+        prior_state = self.memory.get_state(conversation_id)
+        last_plan_summary = prior_state.get("last_plan_summary")
         user_msg = MemoryMessage(
             role="user", content=[{"type": "text", "text": user_message}]
         )
-        messages: List[Dict[str, Any]] = to_claude_messages(prior) + [
+        messages: List[Dict[str, Any]] = to_claude_messages(prior)
+        if last_plan_summary:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": f"Previous plan summary:\n{last_plan_summary}"}],
+                }
+            )
+        messages.append(
             {"role": user_msg.role, "content": user_msg.content}
-        ]
+        )
         log_event(
             conversation_id,
             "user_message",
-            {"message": user_message, "history_count": len(prior)},
+            {
+                "message": user_message,
+                "history_count": len(prior),
+                "has_last_plan_summary": bool(last_plan_summary),
+            },
         )
 
         first_response = await self._call_llm(
@@ -194,11 +208,23 @@ class CyclingTripAgent:
             ]
             reply_text = "".join(content_blocks).strip()
 
+        if not reply_text:
+            if plan:
+                reply_text = "Here are the tool results:\n" + json.dumps(plan, indent=2)
+            else:
+                reply_text = "I wasn't able to produce a reply. Please try again or provide more detail."
+
         assistant_msg = MemoryMessage(
             role="assistant", content=[{"type": "text", "text": reply_text}]
         )
         self.memory.append_message(conversation_id, user_msg)
         self.memory.append_message(conversation_id, assistant_msg)
+        if plan:
+            plan_summary = reply_text or json.dumps(plan)
+            self.memory.update_state(
+                conversation_id,
+                {"last_plan_summary": plan_summary},
+            )
         log_event(
             conversation_id,
             "assistant_reply",
