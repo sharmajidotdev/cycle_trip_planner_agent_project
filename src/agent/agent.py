@@ -5,6 +5,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from anthropic import Anthropic
 
+from agent.logger import log_event
+from agent.memory import InMemoryConversationMemory, MemoryMessage, to_claude_messages
 from agent.prompts import SYSTEM_PROMPT
 from models.schemas import (
     AccommodationRequest,
@@ -36,6 +38,7 @@ class CyclingTripAgent:
             "get_weather": WeatherRequest,
         }
         self.tool_specs = self._build_tool_specs()
+        self.memory = InMemoryConversationMemory(max_messages=50)
 
     def _schema(self, model_cls: Any) -> Dict[str, Any]:
         """
@@ -110,9 +113,32 @@ class CyclingTripAgent:
         message, execute any requested tools, and return the assistant reply
         plus the tool outputs used to form the plan.
         """
-        messages: List[Dict[str, Any]] = [
-            {"role": "user", "content": [{"type": "text", "text": user_message}]}
-        ]
+        prior = self.memory.get_history(conversation_id)
+        prior_state = self.memory.get_state(conversation_id)
+        last_plan_summary = prior_state.get("last_plan_summary")
+        user_msg = MemoryMessage(
+            role="user", content=[{"type": "text", "text": user_message}]
+        )
+        messages: List[Dict[str, Any]] = to_claude_messages(prior)
+        if last_plan_summary:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": f"Previous plan summary:\n{last_plan_summary}"}],
+                }
+            )
+        messages.append(
+            {"role": user_msg.role, "content": user_msg.content}
+        )
+        log_event(
+            conversation_id,
+            "user_message",
+            {
+                "message": user_message,
+                "history_count": len(prior),
+                "has_last_plan_summary": bool(last_plan_summary),
+            },
+        )
 
         first_response = await self._call_llm(
             messages=messages, tools=self.tool_specs, system=SYSTEM_PROMPT
@@ -121,6 +147,20 @@ class CyclingTripAgent:
         tool_calls = [
             item for item in first_response.content if self._block_type(item) == "tool_use"
         ]
+        log_event(
+            conversation_id,
+            "tool_calls",
+            {
+                "requested": [
+                    {
+                        "id": self._block_attr(call, "id"),
+                        "name": self._block_attr(call, "name"),
+                        "input": self._block_attr(call, "input"),
+                    }
+                    for call in tool_calls
+                ]
+            },
+        )
 
         tool_results_payload: List[Dict[str, Any]] = []
         plan: Dict[str, Any] = {}
@@ -139,6 +179,11 @@ class CyclingTripAgent:
                     "tool_use_id": call_id,
                     "content": [{"type": "text", "text": json.dumps(output)}],
                 }
+            )
+            log_event(
+                conversation_id,
+                "tool_result",
+                {"name": call_name, "id": call_id, "output": output},
             )
 
         # If tools were called, send results back for a final answer.
@@ -162,6 +207,29 @@ class CyclingTripAgent:
                 if self._block_type(block) == "text"
             ]
             reply_text = "".join(content_blocks).strip()
+
+        if not reply_text:
+            if plan:
+                reply_text = "Here are the tool results:\n" + json.dumps(plan, indent=2)
+            else:
+                reply_text = "I wasn't able to produce a reply. Please try again or provide more detail."
+
+        assistant_msg = MemoryMessage(
+            role="assistant", content=[{"type": "text", "text": reply_text}]
+        )
+        self.memory.append_message(conversation_id, user_msg)
+        self.memory.append_message(conversation_id, assistant_msg)
+        if plan:
+            plan_summary = reply_text or json.dumps(plan)
+            self.memory.update_state(
+                conversation_id,
+                {"last_plan_summary": plan_summary},
+            )
+        log_event(
+            conversation_id,
+            "assistant_reply",
+            {"reply": reply_text, "plan_keys": list(plan.keys())},
+        )
 
         return {
             "conversation_id": conversation_id,

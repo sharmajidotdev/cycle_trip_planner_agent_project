@@ -8,6 +8,7 @@ Goals:
 - Break the trip into daily segments with distances and notes.
 - Present a clear day-by-day plan, then concise guidance or next steps.
 - If the user changes preferences, adjust the plan rather than starting over.
+- When the user asks to adjust the plan, re-run route and weather as needed and produce a final day-by-day plan—do not omit the text reply.
 
 Tool usage guidance:
 - Only call tools when needed and when you have enough parameters. Otherwise, ask for missing details.
