@@ -1,5 +1,5 @@
 
-from src.models.schemas import RouteRequest, RouteResponse
+from models.schemas import RouteRequest, RouteResponse
 
 async def get_route(req: RouteRequest) -> RouteResponse:
     """
