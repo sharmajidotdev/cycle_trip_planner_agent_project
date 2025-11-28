@@ -13,12 +13,12 @@ from models.schemas import (
     AccommodationRequest,
     BudgetRequest,
     BudgetResponse,
+    ChatLLMResponse,
     DayPlan,
     ElevationRequest,
     ElevationProfile,
     POIRequest,
     PointOfInterest,
-    SimpleLLMResponse,
     VisaRequest,
     VisaRequirement,
     RouteRequest,
@@ -251,7 +251,7 @@ class CyclingTripAgent:
         messages: List[Dict[str, Any]],
         system: Optional[str],
         conversation_id: str,
-    ) -> Optional[SimpleLLMResponse]:
+    ) -> Optional[ChatLLMResponse]:
         if not self.client:
             raise RuntimeError("Anthropic client not configured")
         model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
@@ -263,7 +263,7 @@ class CyclingTripAgent:
                 max_tokens=512,
                 messages=messages,
                 system=system,
-                output_format=SimpleLLMResponse,
+                output_format=ChatLLMResponse,
                 betas=[beta],
             )
             return resp.parsed_output
@@ -461,8 +461,7 @@ class CyclingTripAgent:
         last_response: Any,
         plan: Dict[str, Any],
         tool_calls: List[Dict[str, Any]],
-        requested_days_structured: Optional[int] = None,
-    ) -> tuple[str, Dict[str, Any], Optional[List[str]], Optional[List[str]], Optional[int]]:
+    ) -> tuple[str, Dict[str, Any], Optional[List[str]], Optional[List[str]]]:
         # The structured call must NOT have a prefilled assistant turn last.
         # We pass the conversation up to the last user/tool_result message.
         structured = await self._call_llm_structured(
@@ -472,7 +471,6 @@ class CyclingTripAgent:
         reply_text = ""
         questions: Optional[List[str]] = None
         tool_calls_structured: Optional[List[str]] = None
-        requested_days_structured: Optional[int] = requested_days_structured
         trip_plan = await self._build_trip_plan(plan)
         if structured:
             reply_text = structured.reply or ""
@@ -480,7 +478,6 @@ class CyclingTripAgent:
                 plan = structured.plan
             questions = structured.questions
             tool_calls_structured = structured.tool_calls
-            requested_days_structured = structured.requested_days
         else:
             fallback_text = "".join(
                 [
@@ -514,7 +511,7 @@ class CyclingTripAgent:
             else:
                 reply_text = "I wasn't able to produce a reply. Please try again or provide more detail."
 
-        return reply_text, plan, questions, tool_calls_structured, requested_days_structured
+        return reply_text, plan, questions, tool_calls_structured
 
     async def chat(self, conversation_id: str, user_message: str) -> dict:
         """
@@ -526,22 +523,19 @@ class CyclingTripAgent:
         messages, plan, last_response, tool_calls = await self._run_tool_loop(
             conversation_id, messages
         )
-        reply_text, plan, questions, tool_calls_structured, requested_days_structured = (
-            await self._finalize_response(
-                conversation_id, messages, last_response, plan, tool_calls
-            )
+        reply_text, plan, questions, tool_calls_structured = await self._finalize_response(
+            conversation_id, messages, last_response, plan, tool_calls
         )
 
         # If user requested a certain number of days and route computed fewer/more, ask a clarifying question before finalizing
-        requested_days = requested_days_structured
-        # if requested_days is None:
-        #     for token in user_message.split():
-        #         if token.isdigit():
-        #             try:
-        #                 requested_days = int(token)
-        #                 break
-        #             except ValueError:
-        #                 continue
+        requested_days = None
+        for token in user_message.split():
+            if token.isdigit():
+                try:
+                    requested_days = int(token)
+                    break
+                except ValueError:
+                    continue
         route_days = plan.get("trip_plan", {}).get("days") if isinstance(plan, dict) else None
         if requested_days and route_days and requested_days != route_days:
             clarification = (

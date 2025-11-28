@@ -138,15 +138,6 @@ class ChatLLMResponse(BaseModel):
     plan: dict | None = None
     questions: list[str] | None = None
     tool_calls: list[str] | None = None
-    requested_days: int | None = None
-
-
-class SimpleLLMResponse(BaseModel):
-    reply: str | None = None
-    plan: dict | None = None
-    questions: list[str] | None = None
-    tool_calls: list[str] | None = None
-    requested_days: int | None = None
 
 
 class DayPlan(BaseModel):
