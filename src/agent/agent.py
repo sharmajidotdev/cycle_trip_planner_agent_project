@@ -11,12 +11,11 @@ from agent.memory import InMemoryConversationMemory, MemoryMessage, to_claude_me
 from agent.prompts import SYSTEM_PROMPT
 from models.schemas import (
     AccommodationRequest,
-    
     ChatLLMResponse,
+    DayPlan,
     RouteRequest,
-    
+    TripPlan,
     WeatherRequest,
-    
 )
 from tools import accomodation, route, weather
 
@@ -59,6 +58,67 @@ class CyclingTripAgent:
 
     def _block_type(self, block: Any) -> Optional[str]:
         return self._block_attr(block, "type")
+
+    def _build_trip_plan(self, plan: Dict[str, Any]) -> Optional[TripPlan]:
+        """
+        Build a normalized TripPlan from accumulated tool outputs to ensure the API
+        returns a full itinerary even if the LLM structured parsing fails.
+        """
+        route_data = plan.get("get_route")
+        if isinstance(route_data, list):
+            route_data = route_data[0] if route_data else None
+        if not isinstance(route_data, dict):
+            return None
+
+        segments = route_data.get("segments") or []
+        accom_data = plan.get("find_accommodation")
+        if accom_data is None:
+            accom_data = []
+        if not isinstance(accom_data, list):
+            accom_data = [accom_data]
+        accom_by_day = {item.get("day"): item.get("options") for item in accom_data if isinstance(item, dict)}
+
+        weather_data = plan.get("get_weather")
+        if weather_data is None:
+            weather_data = []
+        if not isinstance(weather_data, list):
+            weather_data = [weather_data]
+        weather_by_day = {}
+        for item in weather_data:
+            if isinstance(item, dict):
+                daily = item.get("daily") or []
+                for entry in daily:
+                    day_idx = entry.get("day")
+                    if day_idx is not None:
+                        weather_by_day[day_idx] = entry
+
+        itinerary: List[DayPlan] = []
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            day_idx = seg.get("day")
+            if day_idx is None:
+                continue
+            itinerary.append(
+                DayPlan(
+                    day=day_idx,
+                    start=seg.get("start", ""),
+                    end=seg.get("end", ""),
+                    distance_km=seg.get("distance_km", 0.0),
+                    accommodation=accom_by_day.get(day_idx),
+                    weather=weather_by_day.get(day_idx),
+                    notes=seg.get("notes"),
+                )
+            )
+
+        if not itinerary:
+            return None
+
+        return TripPlan(
+            total_distance_km=route_data.get("total_distance_km", 0.0),
+            days=route_data.get("days", len(itinerary)),
+            itinerary=sorted(itinerary, key=lambda d: d.day),
+        )
 
     def _build_tool_specs(self) -> List[Dict[str, Any]]:
         return [
@@ -178,12 +238,14 @@ class CyclingTripAgent:
         plan: Dict[str, Any] = {}
         tool_round = 0
         tool_calls: List[Dict[str, Any]] = []
-        max_rounds = 4  # safeguard to avoid infinite loops
+        max_rounds = 4  # primary safeguard
+        cleanup_rounds = 2  # limited retries to clear dangling tool_use
+        total_rounds_allowed = max_rounds + cleanup_rounds
         last_response = await self._call_llm(
             messages=messages, tools=self.tool_specs, system=SYSTEM_PROMPT
         )
 
-        while tool_round < max_rounds:
+        while tool_round < total_rounds_allowed:
             tool_calls = [
                 item for item in last_response.content if self._block_type(item) == "tool_use"
             ]
@@ -245,7 +307,14 @@ class CyclingTripAgent:
                         }
                     )
                     continue
-                plan[call_name] = output
+                existing = plan.get(call_name)
+                if isinstance(existing, list):
+                    existing.append(output)
+                    plan[call_name] = existing
+                elif existing is not None:
+                    plan[call_name] = [existing, output]
+                else:
+                    plan[call_name] = output
                 tool_results_payload.append(
                     {
                         "type": "tool_result",
@@ -265,6 +334,21 @@ class CyclingTripAgent:
                 messages=messages, tools=self.tool_specs, system=SYSTEM_PROMPT
             )
 
+        # If we exhausted retries and still have dangling tool_use, strip them to avoid parser errors
+        dangling_tool_use = [
+            item for item in getattr(last_response, "content", []) if self._block_type(item) == "tool_use"
+        ]
+        if dangling_tool_use:
+            log_event(
+                conversation_id,
+                "tool_calls_dangling_stripped",
+                {"count": len(dangling_tool_use)},
+            )
+            cleaned = [
+                item for item in last_response.content if self._block_type(item) != "tool_use"
+            ]
+            last_response.content = cleaned
+
         return messages, plan, last_response, tool_calls
 
     async def _finalize_response(
@@ -282,11 +366,11 @@ class CyclingTripAgent:
         structured = await self._call_llm_structured(
             messages=final_messages, system=SYSTEM_PROMPT, conversation_id=conversation_id
         )
-        print("Structured output:", structured)
 
         reply_text = ""
         questions: Optional[List[str]] = None
         tool_calls_structured: Optional[List[str]] = None
+        trip_plan = self._build_trip_plan(plan)
         if structured:
             reply_text = structured.reply or ""
             if structured.plan:
@@ -302,6 +386,10 @@ class CyclingTripAgent:
                 ]
             ).strip()
             reply_text = fallback_text
+
+        if trip_plan:
+            base_plan = plan if isinstance(plan, dict) else {}
+            plan = {**base_plan, "trip_plan": trip_plan.model_dump()}
 
         if not plan and not tool_calls and not questions:
             questions = [

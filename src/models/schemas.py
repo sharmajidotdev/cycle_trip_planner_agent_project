@@ -60,3 +60,19 @@ class ChatLLMResponse(BaseModel):
     plan: dict | None = None
     questions: list[str] | None = None
     tool_calls: list[str] | None = None
+
+
+class DayPlan(BaseModel):
+    day: int
+    start: str
+    end: str
+    distance_km: float
+    accommodation: list[AccommodationOption] | None = None
+    weather: WeatherDaily | None = None
+    notes: str | None = None
+
+
+class TripPlan(BaseModel):
+    total_distance_km: float
+    days: int
+    itinerary: list[DayPlan]
