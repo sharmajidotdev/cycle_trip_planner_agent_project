@@ -58,7 +58,7 @@ async def reverse_geocode(lat: float, lon: float) -> Optional[ReverseGeoResult]:
     Returns None on any failure.
     """
     url = "https://geocoding-api.open-meteo.com/v1/reverse"
-    params = {"latitude": lat, "longitude": lon, "count": 1, "language": "en", "format": "json"}
+    params = {"latitude": lat, "longitude": lon, "count": 3, "language": "en", "format": "json"}
     try:
         async with httpx.AsyncClient(timeout=8) as client:
             resp = await client.get(url, params=params)
@@ -75,6 +75,12 @@ async def reverse_geocode(lat: float, lon: float) -> Optional[ReverseGeoResult]:
             "lat": float(best.get("latitude", lat)),
             "lon": float(best.get("longitude", lon)),
         }
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            logger.info("Reverse geocoding returned 404 for (%s, %s)", lat, lon)
+            return None
+        logger.warning("Reverse geocoding failed for (%s, %s): %s", lat, lon, exc)
+        return None
     except Exception as exc:
         logger.warning("Reverse geocoding failed for (%s, %s): %s", lat, lon, exc)
         return None

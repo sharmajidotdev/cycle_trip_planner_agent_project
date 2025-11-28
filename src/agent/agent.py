@@ -275,6 +275,21 @@ class CyclingTripAgent:
                 call_input = self._block_attr(call, "input") or {}
                 if not call_name:
                     continue
+                if not call_input:
+                    error_msg = f"Missing required fields for {call_name}; skipping tool call."
+                    log_event(
+                        conversation_id,
+                        "tool_input_missing",
+                        {"name": call_name, "id": call_id},
+                    )
+                    tool_results_payload.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": call_id,
+                            "content": [{"type": "text", "text": error_msg}],
+                        }
+                    )
+                    continue
                 try:
                     output = await self._execute_tool({"name": call_name, "input": call_input})
                 except ValidationError as exc:
@@ -359,12 +374,10 @@ class CyclingTripAgent:
         plan: Dict[str, Any],
         tool_calls: List[Dict[str, Any]],
     ) -> tuple[str, Dict[str, Any], Optional[List[str]], Optional[List[str]]]:
-        final_messages: List[Dict[str, Any]] = messages + [
-            {"role": "assistant", "content": last_response.content}
-        ]
-
+        # The structured call must NOT have a prefilled assistant turn last.
+        # We pass the conversation up to the last user/tool_result message.
         structured = await self._call_llm_structured(
-            messages=final_messages, system=SYSTEM_PROMPT, conversation_id=conversation_id
+            messages=messages, system=SYSTEM_PROMPT, conversation_id=conversation_id
         )
 
         reply_text = ""
