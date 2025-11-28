@@ -17,11 +17,13 @@ from models.schemas import (
     ElevationProfile,
     POIRequest,
     PointOfInterest,
+    VisaRequest,
+    VisaRequirement,
     RouteRequest,
     TripPlan,
     WeatherRequest,
 )
-from tools import accomodation, elevation, poi, route, weather
+from tools import accomodation, elevation, poi, route, visa, weather
 
 
 class CyclingTripAgent:
@@ -38,6 +40,7 @@ class CyclingTripAgent:
             "get_weather": weather.get_weather,
             "get_elevation_profile": elevation.get_elevation_profile,
             "get_points_of_interest": poi.get_points_of_interest,
+            "check_visa_requirements": visa.check_visa_requirements,
         }
         self.tool_input_models: Dict[str, Any] = {
             "get_route": RouteRequest,
@@ -45,6 +48,7 @@ class CyclingTripAgent:
             "get_weather": WeatherRequest,
             "get_elevation_profile": ElevationRequest,
             "get_points_of_interest": POIRequest,
+            "check_visa_requirements": VisaRequest,
         }
         self.tool_specs = self._build_tool_specs()
         self.memory = InMemoryConversationMemory(max_messages=50)
@@ -126,6 +130,12 @@ class CyclingTripAgent:
                 if day_idx is not None:
                     poi_by_day[day_idx] = item.get("pois")
 
+        visa_data = plan.get("check_visa_requirements")
+        if isinstance(visa_data, dict):
+            visa_req = visa_data.get("requirement")
+        else:
+            visa_req = None
+
         itinerary: List[DayPlan] = []
         for seg in segments:
             if not isinstance(seg, dict):
@@ -143,6 +153,7 @@ class CyclingTripAgent:
                     weather=weather_by_day.get(day_idx),
                     elevation=elevation_by_day.get(day_idx),
                     points_of_interest=poi_by_day.get(day_idx),
+                    visa=visa_req,
                     notes=seg.get("notes"),
                 )
             )
@@ -182,6 +193,11 @@ class CyclingTripAgent:
                 "name": "get_points_of_interest",
                 "description": "Provide nearby points of interest (landmarks, parks, museums, viewpoints, food) for a given location/day. Use this to enrich daily plans with suggested stops. Parameters: `location` and `day`. Mocked data only; no live API.",
                 "input_schema": self._schema(POIRequest),
+            },
+            {
+                "name": "check_visa_requirements",
+                "description": "Check if a traveler needs a visa for the destination. Inputs: nationality, destination_country, optional stay_length_days. Outputs whether a visa is required, type, allowed stay days, and notes. Mocked data only; no live API.",
+                "input_schema": self._schema(VisaRequest),
             },
         ]
 

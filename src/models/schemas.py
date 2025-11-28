@@ -90,6 +90,25 @@ class POIResponse(BaseModel):
     pois: list[PointOfInterest]
 
 
+class VisaRequest(BaseModel):
+    nationality: str
+    destination_country: str
+    stay_length_days: int | None = None
+
+
+class VisaRequirement(BaseModel):
+    required: bool
+    type: str | None = None
+    notes: str | None = None
+    allowed_stay_days: int | None = None
+
+
+class VisaResponse(BaseModel):
+    nationality: str
+    destination_country: str
+    requirement: VisaRequirement
+
+
 class ChatLLMResponse(BaseModel):
     reply: str | None = None
     plan: dict | None = None
@@ -106,6 +125,7 @@ class DayPlan(BaseModel):
     weather: WeatherDaily | None = None
     elevation: ElevationProfile | None = None
     points_of_interest: list[PointOfInterest] | None = None
+    visa: VisaRequirement | None = None
     notes: str | None = None
 
 
