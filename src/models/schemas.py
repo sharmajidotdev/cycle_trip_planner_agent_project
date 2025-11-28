@@ -54,6 +54,84 @@ class WeatherDaily(BaseModel):
 class WeatherResponse(BaseModel):
     daily: list[WeatherDaily]
 
+class ElevationRequest(BaseModel):
+    location: str
+    day: int
+
+
+class ElevationProfile(BaseModel):
+    day: int
+    location: str
+    elevation_gain_m: float
+    elevation_loss_m: float
+    difficulty: str
+    notes: str | None = None
+
+
+class ElevationResponse(BaseModel):
+    profile: list[ElevationProfile]
+
+
+class POIRequest(BaseModel):
+    location: str
+    day: int
+
+
+class PointOfInterest(BaseModel):
+    name: str
+    category: str
+    description: str | None = None
+    relevance: str | None = None
+
+
+class POIResponse(BaseModel):
+    day: int
+    location: str
+    pois: list[PointOfInterest]
+
+
+class BudgetRequest(BaseModel):
+    days: int | None = None
+    currency: str | None = "USD"
+    nightly_budget: float | None = None
+    food_per_day: float | None = None
+    incidentals_per_day: float | None = None
+    travelers: int | None = 1
+
+
+class BudgetBreakdown(BaseModel):
+    lodging_total: float
+    food_total: float
+    incidentals_total: float
+    buffer_total: float | None = None
+
+
+class BudgetResponse(BaseModel):
+    currency: str
+    total: float
+    per_day: float | None = None
+    breakdown: BudgetBreakdown | None = None
+    notes: str | None = None
+
+
+class VisaRequest(BaseModel):
+    nationality: str
+    destination_country: str
+    stay_length_days: int | None = None
+
+
+class VisaRequirement(BaseModel):
+    required: bool
+    type: str | None = None
+    notes: str | None = None
+    allowed_stay_days: int | None = None
+
+
+class VisaResponse(BaseModel):
+    nationality: str
+    destination_country: str
+    requirement: VisaRequirement
+
 
 class ChatLLMResponse(BaseModel):
     reply: str | None = None
@@ -69,6 +147,9 @@ class DayPlan(BaseModel):
     distance_km: float
     accommodation: list[AccommodationOption] | None = None
     weather: WeatherDaily | None = None
+    elevation: ElevationProfile | None = None
+    points_of_interest: list[PointOfInterest] | None = None
+    visa: VisaRequirement | None = None
     notes: str | None = None
 
 
@@ -76,3 +157,4 @@ class TripPlan(BaseModel):
     total_distance_km: float
     days: int
     itinerary: list[DayPlan]
+    budget: BudgetResponse | None = None

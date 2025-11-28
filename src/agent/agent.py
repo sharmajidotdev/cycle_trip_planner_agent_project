@@ -11,13 +11,21 @@ from agent.memory import InMemoryConversationMemory, MemoryMessage, to_claude_me
 from agent.prompts import SYSTEM_PROMPT
 from models.schemas import (
     AccommodationRequest,
+    BudgetRequest,
+    BudgetResponse,
     ChatLLMResponse,
     DayPlan,
+    ElevationRequest,
+    ElevationProfile,
+    POIRequest,
+    PointOfInterest,
+    VisaRequest,
+    VisaRequirement,
     RouteRequest,
     TripPlan,
     WeatherRequest,
 )
-from tools import accomodation, route, weather
+from tools import accomodation, budget, elevation, poi, route, visa, weather
 
 
 class CyclingTripAgent:
@@ -32,11 +40,19 @@ class CyclingTripAgent:
             "get_route": route.get_route,
             "find_accommodation": accomodation.find_accommodation,
             "get_weather": weather.get_weather,
+            "get_elevation_profile": elevation.get_elevation_profile,
+            "get_points_of_interest": poi.get_points_of_interest,
+            "check_visa_requirements": visa.check_visa_requirements,
+            "estimate_budget": budget.estimate_budget,
         }
         self.tool_input_models: Dict[str, Any] = {
             "get_route": RouteRequest,
             "find_accommodation": AccommodationRequest,
             "get_weather": WeatherRequest,
+            "get_elevation_profile": ElevationRequest,
+            "get_points_of_interest": POIRequest,
+            "check_visa_requirements": VisaRequest,
+            "estimate_budget": BudgetRequest,
         }
         self.tool_specs = self._build_tool_specs()
         self.memory = InMemoryConversationMemory(max_messages=50)
@@ -59,7 +75,7 @@ class CyclingTripAgent:
     def _block_type(self, block: Any) -> Optional[str]:
         return self._block_attr(block, "type")
 
-    def _build_trip_plan(self, plan: Dict[str, Any]) -> Optional[TripPlan]:
+    async def _build_trip_plan(self, plan: Dict[str, Any]) -> Optional[TripPlan]:
         """
         Build a normalized TripPlan from accumulated tool outputs to ensure the API
         returns a full itinerary even if the LLM structured parsing fails.
@@ -92,6 +108,41 @@ class CyclingTripAgent:
                     if day_idx is not None:
                         weather_by_day[day_idx] = entry
 
+        elevation_data = plan.get("get_elevation_profile")
+        if elevation_data is None:
+            elevation_data = []
+        if not isinstance(elevation_data, list):
+            elevation_data = [elevation_data]
+        elevation_by_day = {}
+        for item in elevation_data:
+            if isinstance(item, dict):
+                profiles = item.get("profile") or []
+                for entry in profiles:
+                    day_idx = entry.get("day")
+                    if day_idx is not None:
+                        elevation_by_day[day_idx] = entry
+
+        poi_data = plan.get("get_points_of_interest")
+        if poi_data is None:
+            poi_data = []
+        if not isinstance(poi_data, list):
+            poi_data = [poi_data]
+        poi_by_day = {}
+        for item in poi_data:
+            if isinstance(item, dict):
+                day_idx = item.get("day")
+                if day_idx is not None:
+                    poi_by_day[day_idx] = item.get("pois")
+
+        visa_data = plan.get("check_visa_requirements")
+        if isinstance(visa_data, dict):
+            visa_req = visa_data.get("requirement")
+        else:
+            visa_req = None
+
+        budget_data = plan.get("estimate_budget")
+        budget_resp = budget_data if isinstance(budget_data, dict) else None
+
         itinerary: List[DayPlan] = []
         for seg in segments:
             if not isinstance(seg, dict):
@@ -99,6 +150,9 @@ class CyclingTripAgent:
             day_idx = seg.get("day")
             if day_idx is None:
                 continue
+            note_val = seg.get("notes")
+            if not note_val:
+                note_val = "Continue along secondary roads."
             itinerary.append(
                 DayPlan(
                     day=day_idx,
@@ -107,17 +161,31 @@ class CyclingTripAgent:
                     distance_km=seg.get("distance_km", 0.0),
                     accommodation=accom_by_day.get(day_idx),
                     weather=weather_by_day.get(day_idx),
-                    notes=seg.get("notes"),
+                    elevation=elevation_by_day.get(day_idx),
+                    points_of_interest=poi_by_day.get(day_idx),
+                    visa=visa_req,
+                    notes=note_val,
                 )
             )
 
         if not itinerary:
             return None
 
+        if not budget_resp:
+            try:
+                budget_resp_model = await budget.estimate_budget(
+                    BudgetRequest(days=route_data.get("days")),
+                    itinerary=[day.model_dump() for day in itinerary],
+                )
+                budget_resp = budget_resp_model.model_dump()
+            except Exception:
+                budget_resp = None
+
         return TripPlan(
             total_distance_km=route_data.get("total_distance_km", 0.0),
             days=route_data.get("days", len(itinerary)),
             itinerary=sorted(itinerary, key=lambda d: d.day),
+            budget=budget_resp,
         )
 
     def _build_tool_specs(self) -> List[Dict[str, Any]]:
@@ -136,6 +204,26 @@ class CyclingTripAgent:
                 "name": "get_weather",
                 "description": "Weather forecast tool that returns plausible conditions for a given location and day. Use this to provide day-level outlooks (conditions, highs/lows, precipitation chance) for cycling plans. Parameters: `location` sets the area to forecast; `day` is the trip day index used to vary conditions. Limitations: no hourly breakdown, and no wind/elevation-specific effects; it returns only day-level summaries. Outputs include conditions, high/low temperatures, and an estimated precipitation chance.",
                 "input_schema": self._schema(WeatherRequest),
+            },
+            {
+                "name": "get_elevation_profile",
+                "description": "Get terrain difficulty — elevation gain, elevation loss, and a simple difficulty rating for a given location/day. Use this to summarize hilliness or effort expectations for each trip day. Parameters: `location` and `day`. Mocked data; no live terrain API calls.",
+                "input_schema": self._schema(ElevationRequest),
+            },
+            {
+                "name": "get_points_of_interest",
+                "description": "Provide nearby points of interest (landmarks, parks, museums, viewpoints, food) for a given location/day. Use this to enrich daily plans with suggested stops. Parameters: `location` and `day`. Mocked data only; no live API.",
+                "input_schema": self._schema(POIRequest),
+            },
+            {
+                "name": "check_visa_requirements",
+                "description": "Check if a traveler needs a visa for the destination. Inputs: nationality, destination_country, optional stay_length_days. Outputs whether a visa is required, type, allowed stay days, and notes. Mocked data only; no live API.",
+                "input_schema": self._schema(VisaRequest),
+            },
+            {
+                "name": "estimate_budget",
+                "description": "Estimate total and per-day budget for the trip based on days, lodging costs, food, and incidentals. Inputs: days (optional if itinerary is known), currency, nightly_budget, food_per_day, incidentals_per_day, travelers. Mocked data only; no live API.",
+                "input_schema": self._schema(BudgetRequest),
             },
         ]
 
@@ -383,7 +471,7 @@ class CyclingTripAgent:
         reply_text = ""
         questions: Optional[List[str]] = None
         tool_calls_structured: Optional[List[str]] = None
-        trip_plan = self._build_trip_plan(plan)
+        trip_plan = await self._build_trip_plan(plan)
         if structured:
             reply_text = structured.reply or ""
             if structured.plan:
@@ -439,6 +527,29 @@ class CyclingTripAgent:
             conversation_id, messages, last_response, plan, tool_calls
         )
 
+        # If user requested a certain number of days and route computed fewer/more, ask a clarifying question before finalizing
+        requested_days = None
+        for token in user_message.split():
+            if token.isdigit():
+                try:
+                    requested_days = int(token)
+                    break
+                except ValueError:
+                    continue
+        route_days = plan.get("trip_plan", {}).get("days") if isinstance(plan, dict) else None
+        if requested_days and route_days and requested_days != route_days:
+            clarification = (
+                f"The route fits {route_days} days, but you mentioned different number of days. "
+                f"Do you want me to stretch/compress days (adjust daily distance or add detours)?"
+            )
+            if questions is None:
+                questions = []
+            if clarification not in questions:
+                questions.append(clarification)
+            # Defer finalizing the plan until the user confirms; return questions only.
+            plan = None
+            reply_text = "I need your preference on trip length before finalizing the plan."
+
         assistant_msg = MemoryMessage(
             role="assistant", content=[{"type": "text", "text": reply_text}]
         )
@@ -455,7 +566,7 @@ class CyclingTripAgent:
             "assistant_reply",
             {
                 "reply": reply_text,
-                "plan_keys": list(plan.keys()),
+                "plan_keys": list((plan or {}).keys()),
                 "questions": questions or [],
                 "tool_calls_structured": tool_calls_structured or [],
             },
