@@ -86,6 +86,7 @@ class DayPlan(BaseModel):
     distance_km: float
     accommodation: list[AccommodationOption] | None = None
     weather: WeatherDaily | None = None
+    elevation: ElevationProfile | None = None
     notes: str | None = None
 
 

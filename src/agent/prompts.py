@@ -15,7 +15,7 @@ Tooling contract (for both tool-use responses and structured outputs)
 - Handle failures gracefully: note missing data/errors briefly and continue with best-effort guidance.
 
 Plan assembly expectations
-- Use route output to anchor days; then pull accommodation and weather per day/stop.
+- Use route output to anchor days; then pull accommodation, weather, and elevation per day/stop.
 - Include elevation difficulty per day when helpful.
 - Prefer real place names for stops; if a stop is generic, suggest the nearest town.
 - Summarize every day; do not drop early days when later tools fail.

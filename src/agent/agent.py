@@ -14,6 +14,7 @@ from models.schemas import (
     ChatLLMResponse,
     DayPlan,
     ElevationRequest,
+    ElevationProfile,
     RouteRequest,
     TripPlan,
     WeatherRequest,
@@ -95,6 +96,20 @@ class CyclingTripAgent:
                     if day_idx is not None:
                         weather_by_day[day_idx] = entry
 
+        elevation_data = plan.get("get_elevation_profile")
+        if elevation_data is None:
+            elevation_data = []
+        if not isinstance(elevation_data, list):
+            elevation_data = [elevation_data]
+        elevation_by_day = {}
+        for item in elevation_data:
+            if isinstance(item, dict):
+                profiles = item.get("profile") or []
+                for entry in profiles:
+                    day_idx = entry.get("day")
+                    if day_idx is not None:
+                        elevation_by_day[day_idx] = entry
+
         itinerary: List[DayPlan] = []
         for seg in segments:
             if not isinstance(seg, dict):
@@ -110,6 +125,7 @@ class CyclingTripAgent:
                     distance_km=seg.get("distance_km", 0.0),
                     accommodation=accom_by_day.get(day_idx),
                     weather=weather_by_day.get(day_idx),
+                    elevation=elevation_by_day.get(day_idx),
                     notes=seg.get("notes"),
                 )
             )
