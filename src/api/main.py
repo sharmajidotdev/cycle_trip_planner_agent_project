@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from anthropic import Anthropic
 
 from agent.agent import CyclingTripAgent
+from models.schemas import TripPlan
 
 load_dotenv()
 
@@ -26,7 +27,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     conversation_id: str
     reply: str
-    plan: dict | None = None
+    triplan: TripPlan | None = None
     questions: list[str] | None = None
 
 
