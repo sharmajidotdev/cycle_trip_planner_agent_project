@@ -90,6 +90,30 @@ class POIResponse(BaseModel):
     pois: list[PointOfInterest]
 
 
+class BudgetRequest(BaseModel):
+    days: int | None = None
+    currency: str | None = "USD"
+    nightly_budget: float | None = None
+    food_per_day: float | None = None
+    incidentals_per_day: float | None = None
+    travelers: int | None = 1
+
+
+class BudgetBreakdown(BaseModel):
+    lodging_total: float
+    food_total: float
+    incidentals_total: float
+    buffer_total: float | None = None
+
+
+class BudgetResponse(BaseModel):
+    currency: str
+    total: float
+    per_day: float | None = None
+    breakdown: BudgetBreakdown | None = None
+    notes: str | None = None
+
+
 class VisaRequest(BaseModel):
     nationality: str
     destination_country: str
@@ -133,3 +157,4 @@ class TripPlan(BaseModel):
     total_distance_km: float
     days: int
     itinerary: list[DayPlan]
+    budget: BudgetResponse | None = None

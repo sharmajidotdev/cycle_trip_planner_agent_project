@@ -17,13 +17,15 @@ from models.schemas import (
     ElevationProfile,
     POIRequest,
     PointOfInterest,
+    BudgetRequest,
+    BudgetResponse,
     VisaRequest,
     VisaRequirement,
     RouteRequest,
     TripPlan,
     WeatherRequest,
 )
-from tools import accomodation, elevation, poi, route, visa, weather
+from tools import accomodation, budget, elevation, poi, route, visa, weather
 
 
 class CyclingTripAgent:
@@ -41,6 +43,7 @@ class CyclingTripAgent:
             "get_elevation_profile": elevation.get_elevation_profile,
             "get_points_of_interest": poi.get_points_of_interest,
             "check_visa_requirements": visa.check_visa_requirements,
+            "estimate_budget": budget.estimate_budget,
         }
         self.tool_input_models: Dict[str, Any] = {
             "get_route": RouteRequest,
@@ -49,6 +52,7 @@ class CyclingTripAgent:
             "get_elevation_profile": ElevationRequest,
             "get_points_of_interest": POIRequest,
             "check_visa_requirements": VisaRequest,
+            "estimate_budget": BudgetRequest,
         }
         self.tool_specs = self._build_tool_specs()
         self.memory = InMemoryConversationMemory(max_messages=50)
@@ -71,7 +75,7 @@ class CyclingTripAgent:
     def _block_type(self, block: Any) -> Optional[str]:
         return self._block_attr(block, "type")
 
-    def _build_trip_plan(self, plan: Dict[str, Any]) -> Optional[TripPlan]:
+    async def _build_trip_plan(self, plan: Dict[str, Any]) -> Optional[TripPlan]:
         """
         Build a normalized TripPlan from accumulated tool outputs to ensure the API
         returns a full itinerary even if the LLM structured parsing fails.
@@ -136,6 +140,9 @@ class CyclingTripAgent:
         else:
             visa_req = None
 
+        budget_data = plan.get("estimate_budget")
+        budget_resp = budget_data if isinstance(budget_data, dict) else None
+
         itinerary: List[DayPlan] = []
         for seg in segments:
             if not isinstance(seg, dict):
@@ -161,10 +168,21 @@ class CyclingTripAgent:
         if not itinerary:
             return None
 
+        if not budget_resp:
+            try:
+                budget_resp_model = await budget.estimate_budget(
+                    BudgetRequest(days=route_data.get("days")),
+                    itinerary=[day.model_dump() for day in itinerary],
+                )
+                budget_resp = budget_resp_model.model_dump()
+            except Exception:
+                budget_resp = None
+
         return TripPlan(
             total_distance_km=route_data.get("total_distance_km", 0.0),
             days=route_data.get("days", len(itinerary)),
             itinerary=sorted(itinerary, key=lambda d: d.day),
+            budget=budget_resp,
         )
 
     def _build_tool_specs(self) -> List[Dict[str, Any]]:
@@ -198,6 +216,11 @@ class CyclingTripAgent:
                 "name": "check_visa_requirements",
                 "description": "Check if a traveler needs a visa for the destination. Inputs: nationality, destination_country, optional stay_length_days. Outputs whether a visa is required, type, allowed stay days, and notes. Mocked data only; no live API.",
                 "input_schema": self._schema(VisaRequest),
+            },
+            {
+                "name": "estimate_budget",
+                "description": "Estimate total and per-day budget for the trip based on days, lodging costs, food, and incidentals. Inputs: days (optional if itinerary is known), currency, nightly_budget, food_per_day, incidentals_per_day, travelers. Mocked data only; no live API.",
+                "input_schema": self._schema(BudgetRequest),
             },
         ]
 
@@ -445,7 +468,7 @@ class CyclingTripAgent:
         reply_text = ""
         questions: Optional[List[str]] = None
         tool_calls_structured: Optional[List[str]] = None
-        trip_plan = self._build_trip_plan(plan)
+        trip_plan = await self._build_trip_plan(plan)
         if structured:
             reply_text = structured.reply or ""
             if structured.plan:
