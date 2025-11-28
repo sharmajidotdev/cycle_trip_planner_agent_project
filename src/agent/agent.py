@@ -140,17 +140,13 @@ class CyclingTripAgent:
             return result.model_dump()
         return result.dict()
 
-    async def chat(self, conversation_id: str, user_message: str) -> dict:
-        """
-        Runs a full tool-enabled exchange with Anthropic: send the user
-        message, execute any requested tools, and return the assistant reply
-        plus the tool outputs used to form the plan.
-        """
-        # 1) Build context and user message
+    def _build_initial_messages(
+        self, conversation_id: str, user_message: str
+    ) -> tuple[List[Dict[str, Any]], MemoryMessage]:
         prior = self.memory.get_history(conversation_id)
         prior_state = self.memory.get_state(conversation_id)
         last_plan_summary = prior_state.get("last_plan_summary")
-        
+
         user_msg = MemoryMessage(
             role="user", content=[{"type": "text", "text": user_message}]
         )
@@ -159,10 +155,11 @@ class CyclingTripAgent:
             messages.append(
                 {
                     "role": "assistant",
-                    "content": [{"type": "text", "text": f"Previous plan summary:\n{last_plan_summary}"}],
+                    "content": [
+                        {"type": "text", "text": f"Previous plan summary:\n{last_plan_summary}"}
+                    ],
                 }
             )
-        
         messages.append({"role": user_msg.role, "content": user_msg.content})
         log_event(
             conversation_id,
@@ -171,11 +168,13 @@ class CyclingTripAgent:
                 "message": user_message,
                 "history_count": len(prior),
                 "has_last_plan_summary": bool(last_plan_summary),
-                
             },
         )
+        return messages, user_msg
 
-        # 2) Repeatedly call tools until the model stops requesting them (or max rounds reached)
+    async def _run_tool_loop(
+        self, conversation_id: str, messages: List[Dict[str, Any]]
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any], Any, List[Dict[str, Any]]]:
         plan: Dict[str, Any] = {}
         tool_round = 0
         tool_calls: List[Dict[str, Any]] = []
@@ -266,18 +265,25 @@ class CyclingTripAgent:
                 messages=messages, tools=self.tool_specs, system=SYSTEM_PROMPT
             )
 
-        # 3) Build final message list for structured answer
+        return messages, plan, last_response, tool_calls
+
+    async def _finalize_response(
+        self,
+        conversation_id: str,
+        messages: List[Dict[str, Any]],
+        last_response: Any,
+        plan: Dict[str, Any],
+        tool_calls: List[Dict[str, Any]],
+    ) -> tuple[str, Dict[str, Any], Optional[List[str]], Optional[List[str]]]:
         final_messages: List[Dict[str, Any]] = messages + [
             {"role": "assistant", "content": last_response.content}
         ]
 
-        # 4) Try structured output
         structured = await self._call_llm_structured(
             messages=final_messages, system=SYSTEM_PROMPT, conversation_id=conversation_id
         )
         print("Structured output:", structured)
-        
-        # 5) Fallback plain text from last response (if no structured)
+
         reply_text = ""
         questions: Optional[List[str]] = None
         tool_calls_structured: Optional[List[str]] = None
@@ -297,7 +303,6 @@ class CyclingTripAgent:
             ).strip()
             reply_text = fallback_text
 
-        # 7) If nothing usable returned, synthesize clarifying qs
         if not plan and not tool_calls and not questions:
             questions = [
                 "What are your start and end locations?",
@@ -309,8 +314,6 @@ class CyclingTripAgent:
             if not reply_text:
                 reply_text = "I need a few details before planning. Please clarify."
 
-        # 8) Guarantee non-empty reply
-        
         if not reply_text:
             if questions:
                 reply_text = "Could you clarify a few points?"
@@ -318,6 +321,22 @@ class CyclingTripAgent:
                 reply_text = "Here is a plan, let me know if you want modifications :\n"
             else:
                 reply_text = "I wasn't able to produce a reply. Please try again or provide more detail."
+
+        return reply_text, plan, questions, tool_calls_structured
+
+    async def chat(self, conversation_id: str, user_message: str) -> dict:
+        """
+        Runs a full tool-enabled exchange with Anthropic: send the user
+        message, execute any requested tools, and return the assistant reply
+        plus the tool outputs used to form the plan.
+        """
+        messages, user_msg = self._build_initial_messages(conversation_id, user_message)
+        messages, plan, last_response, tool_calls = await self._run_tool_loop(
+            conversation_id, messages
+        )
+        reply_text, plan, questions, tool_calls_structured = await self._finalize_response(
+            conversation_id, messages, last_response, plan, tool_calls
+        )
 
         assistant_msg = MemoryMessage(
             role="assistant", content=[{"type": "text", "text": reply_text}]
