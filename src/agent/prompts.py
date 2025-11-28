@@ -34,6 +34,7 @@ Clarifying vs. planning
 STRUCTURED_SYSTEM_PROMPT = """
 You are finalizing a cycling trip plan.
 You are provided all tool outputs collected so far, plus any prior user preferences.
+The response must be a structured JSON object with these fields: reply (string), questions (list of strings), and optional adjustments (object with optional target_days (int) and note_overrides (list of {day (int), notes (string)})).
 Follow these rules to produce the final structured response.
 - Return only the structured fields: reply (concise and not include full plan here), questions (clarifications if need more info for creating plan), and optional adjustments (target_days, note_overrides etc so that the plan can be adjusted).
 - do NOT include the plan in reply.
