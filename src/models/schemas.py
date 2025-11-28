@@ -133,11 +133,17 @@ class VisaResponse(BaseModel):
     requirement: VisaRequirement
 
 
-class ChatLLMResponse(BaseModel):
-    reply: str | None = None
-    plan: dict | None = None
-    questions: list[str] | None = None
-    tool_calls: list[str] | None = None
+
+
+
+class DayNoteOverride(BaseModel):
+    day: int
+    notes: str
+
+
+class Adjustments(BaseModel):
+    target_days: int | None = None
+    note_overrides: list[DayNoteOverride] | None = None
 
 
 class DayPlan(BaseModel):
@@ -158,3 +164,10 @@ class TripPlan(BaseModel):
     days: int
     itinerary: list[DayPlan]
     budget: BudgetResponse | None = None
+
+
+class ChatLLMResponse(BaseModel):
+    reply: str | None = None
+    questions: list[str] | None = None
+    tool_calls: list[str] | None = None
+    adjustments: Adjustments | None = None

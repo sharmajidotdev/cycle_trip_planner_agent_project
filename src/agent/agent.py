@@ -8,12 +8,14 @@ from pydantic import ValidationError
 
 from agent.logger import log_event
 from agent.memory import InMemoryConversationMemory, MemoryMessage, to_claude_messages
-from agent.prompts import SYSTEM_PROMPT
+from agent.prompts import STRUCTURED_SYSTEM_PROMPT, TOOL_SYSTEM_PROMPT
 from models.schemas import (
     AccommodationRequest,
     BudgetRequest,
     BudgetResponse,
     ChatLLMResponse,
+    Adjustments,
+    DayNoteOverride,
     DayPlan,
     ElevationRequest,
     ElevationProfile,
@@ -74,6 +76,51 @@ class CyclingTripAgent:
 
     def _block_type(self, block: Any) -> Optional[str]:
         return self._block_attr(block, "type")
+
+    def _apply_adjustments(self, trip_plan: TripPlan, adjustments: Adjustments) -> TripPlan:
+        if not adjustments:
+            return trip_plan
+
+        if adjustments.note_overrides:
+            override_map = {}
+            for item in adjustments.note_overrides:
+                if isinstance(item, DayNoteOverride):
+                    override_map[item.day] = item.notes
+                elif isinstance(item, dict) and "day" in item and "notes" in item:
+                    override_map[item["day"]] = item["notes"]
+            updated_itinerary: List[DayPlan] = []
+            for day in trip_plan.itinerary:
+                if day.day in override_map:
+                    day.notes = override_map[day.day]
+                updated_itinerary.append(day)
+            trip_plan.itinerary = updated_itinerary
+
+        if adjustments.target_days:
+            target = adjustments.target_days
+            current = trip_plan.days
+            if target > current:
+                last_end = trip_plan.itinerary[-1].end if trip_plan.itinerary else ""
+                for idx in range(current + 1, target + 1):
+                    trip_plan.itinerary.append(
+                        DayPlan(
+                            day=idx,
+                            start=last_end,
+                            end=last_end,
+                            distance_km=0.0,
+                            accommodation=None,
+                            weather=None,
+                            elevation=None,
+                            points_of_interest=None,
+                            visa=trip_plan.itinerary[0].visa if trip_plan.itinerary else None,
+                            notes="Additional day added per adjustments.",
+                        )
+                    )
+                trip_plan.days = target
+            elif target < current:
+                trip_plan.itinerary = trip_plan.itinerary[:target]
+                trip_plan.days = target
+
+        return trip_plan
 
     async def _build_trip_plan(self, plan: Dict[str, Any]) -> Optional[TripPlan]:
         """
@@ -330,7 +377,7 @@ class CyclingTripAgent:
         cleanup_rounds = 2  # limited retries to clear dangling tool_use
         total_rounds_allowed = max_rounds + cleanup_rounds
         last_response = await self._call_llm(
-            messages=messages, tools=self.tool_specs, system=SYSTEM_PROMPT
+            messages=messages, tools=self.tool_specs, system=TOOL_SYSTEM_PROMPT
         )
 
         while tool_round < total_rounds_allowed:
@@ -434,7 +481,7 @@ class CyclingTripAgent:
             messages.append({"role": "assistant", "content": last_response.content})
             messages.append({"role": "user", "content": tool_results_payload})
             last_response = await self._call_llm(
-                messages=messages, tools=self.tool_specs, system=SYSTEM_PROMPT
+                messages=messages, tools=self.tool_specs, system=TOOL_SYSTEM_PROMPT
             )
 
         # If we exhausted retries and still have dangling tool_use, strip them to avoid parser errors
@@ -465,19 +512,19 @@ class CyclingTripAgent:
         # The structured call must NOT have a prefilled assistant turn last.
         # We pass the conversation up to the last user/tool_result message.
         structured = await self._call_llm_structured(
-            messages=messages, system=SYSTEM_PROMPT, conversation_id=conversation_id
+            messages=messages, system=STRUCTURED_SYSTEM_PROMPT, conversation_id=conversation_id
         )
 
+        print("Structured response:", structured)
         reply_text = ""
         questions: Optional[List[str]] = None
         tool_calls_structured: Optional[List[str]] = None
         trip_plan = await self._build_trip_plan(plan)
         if structured:
             reply_text = structured.reply or ""
-            if structured.plan:
-                plan = structured.plan
             questions = structured.questions
             tool_calls_structured = structured.tool_calls
+            adjustments = structured.adjustments
         else:
             fallback_text = "".join(
                 [
@@ -487,12 +534,14 @@ class CyclingTripAgent:
                 ]
             ).strip()
             reply_text = fallback_text
+            adjustments = None
 
         if trip_plan:
-            base_plan = plan if isinstance(plan, dict) else {}
-            plan = {**base_plan, "trip_plan": trip_plan.model_dump()}
+            if adjustments:
+                trip_plan = self._apply_adjustments(trip_plan, adjustments)
+            
 
-        if not plan and not tool_calls and not questions:
+        if not trip_plan and not tool_calls and not questions:
             questions = [
                 "What are your start and end locations?",
                 "How many kilometers per day would you like to ride?",
@@ -511,7 +560,7 @@ class CyclingTripAgent:
             else:
                 reply_text = "I wasn't able to produce a reply. Please try again or provide more detail."
 
-        return reply_text, plan, questions, tool_calls_structured
+        return reply_text, trip_plan, questions, tool_calls_structured
 
     async def chat(self, conversation_id: str, user_message: str) -> dict:
         """
@@ -523,39 +572,18 @@ class CyclingTripAgent:
         messages, plan, last_response, tool_calls = await self._run_tool_loop(
             conversation_id, messages
         )
-        reply_text, plan, questions, tool_calls_structured = await self._finalize_response(
+
+
+        reply_text, triplan, questions, tool_calls_structured = await self._finalize_response(
             conversation_id, messages, last_response, plan, tool_calls
         )
-
-        # If user requested a certain number of days and route computed fewer/more, ask a clarifying question before finalizing
-        requested_days = None
-        for token in user_message.split():
-            if token.isdigit():
-                try:
-                    requested_days = int(token)
-                    break
-                except ValueError:
-                    continue
-        route_days = plan.get("trip_plan", {}).get("days") if isinstance(plan, dict) else None
-        if requested_days and route_days and requested_days != route_days:
-            clarification = (
-                f"The route fits {route_days} days, but you mentioned different number of days. "
-                f"Do you want me to stretch/compress days (adjust daily distance or add detours)?"
-            )
-            if questions is None:
-                questions = []
-            if clarification not in questions:
-                questions.append(clarification)
-            # Defer finalizing the plan until the user confirms; return questions only.
-            plan = None
-            reply_text = "I need your preference on trip length before finalizing the plan."
 
         assistant_msg = MemoryMessage(
             role="assistant", content=[{"type": "text", "text": reply_text}]
         )
         self.memory.append_message(conversation_id, user_msg)
         self.memory.append_message(conversation_id, assistant_msg)
-        if plan:
+        if triplan:
             plan_summary = reply_text or json.dumps(plan)
             self.memory.update_state(
                 conversation_id,
@@ -575,7 +603,7 @@ class CyclingTripAgent:
         return {
             "conversation_id": conversation_id,
             "reply": reply_text,
-            "plan": plan or None,
+            "triplan": triplan or None,
             "questions": questions,
             "tool_calls": tool_calls_structured,
         }
