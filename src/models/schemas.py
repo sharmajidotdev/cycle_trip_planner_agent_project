@@ -54,6 +54,23 @@ class WeatherDaily(BaseModel):
 class WeatherResponse(BaseModel):
     daily: list[WeatherDaily]
 
+class ElevationRequest(BaseModel):
+    location: str
+    day: int
+
+
+class ElevationProfile(BaseModel):
+    day: int
+    location: str
+    elevation_gain_m: float
+    elevation_loss_m: float
+    difficulty: str
+    notes: str | None = None
+
+
+class ElevationResponse(BaseModel):
+    profile: list[ElevationProfile]
+
 
 class ChatLLMResponse(BaseModel):
     reply: str | None = None

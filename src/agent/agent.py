@@ -13,11 +13,12 @@ from models.schemas import (
     AccommodationRequest,
     ChatLLMResponse,
     DayPlan,
+    ElevationRequest,
     RouteRequest,
     TripPlan,
     WeatherRequest,
 )
-from tools import accomodation, route, weather
+from tools import accomodation, elevation, route, weather
 
 
 class CyclingTripAgent:
@@ -32,11 +33,13 @@ class CyclingTripAgent:
             "get_route": route.get_route,
             "find_accommodation": accomodation.find_accommodation,
             "get_weather": weather.get_weather,
+            "get_elevation_profile": elevation.get_elevation_profile,
         }
         self.tool_input_models: Dict[str, Any] = {
             "get_route": RouteRequest,
             "find_accommodation": AccommodationRequest,
             "get_weather": WeatherRequest,
+            "get_elevation_profile": ElevationRequest,
         }
         self.tool_specs = self._build_tool_specs()
         self.memory = InMemoryConversationMemory(max_messages=50)
@@ -136,6 +139,11 @@ class CyclingTripAgent:
                 "name": "get_weather",
                 "description": "Weather forecast tool that returns plausible conditions for a given location and day. Use this to provide day-level outlooks (conditions, highs/lows, precipitation chance) for cycling plans. Parameters: `location` sets the area to forecast; `day` is the trip day index used to vary conditions. Limitations: no hourly breakdown, and no wind/elevation-specific effects; it returns only day-level summaries. Outputs include conditions, high/low temperatures, and an estimated precipitation chance.",
                 "input_schema": self._schema(WeatherRequest),
+            },
+            {
+                "name": "get_elevation_profile",
+                "description": "Get terrain difficulty — elevation gain, elevation loss, and a simple difficulty rating for a given location/day. Use this to summarize hilliness or effort expectations for each trip day. Parameters: `location` and `day`. Mocked data; no live terrain API calls.",
+                "input_schema": self._schema(ElevationRequest),
             },
         ]
 
