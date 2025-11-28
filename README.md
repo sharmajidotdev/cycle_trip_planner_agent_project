@@ -37,6 +37,14 @@ Tool-aware cycling trip planner that uses Anthropic's Messages API plus a suite 
    ```
 3. The API will be available at `http://localhost:8000`.
 
+### Streaming (Server-Sent Events)
+- Endpoint: `GET /chat/stream?conversation_id=<id>&message=<text>`
+- Returns `text/event-stream` with progress events (tool calls, assembly) and a final `stage: done` payload containing the reply and plan (when available).
+- Example (CLI): `curl -N "http://localhost:8000/chat/stream?conversation_id=demo&message=Plan%20a%203-day%20ride%20from%20Lyon%20to%20Grenoble"`
+
+### Frontend (SSE tester)
+- A simple UI lives in `frontend/index.html`. Open it in a browser (or serve via `python -m http.server` from the `frontend` directory) and point it at your API base URL (defaults to `http://localhost:8000`). It streams `/chat/stream` events and logs them in-page.
+
 ### Documentation
 - Architecture: `docs/architecture.md`
 - Flow of code: `docs/flow-of-code.md`

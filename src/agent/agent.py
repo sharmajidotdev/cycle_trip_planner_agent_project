@@ -60,6 +60,16 @@ class CyclingTripAgent:
         self.memory = InMemoryConversationMemory(max_messages=50)
 
     
+    async def _emit_progress(self, cb: Optional[Callable[[Dict[str, Any]], Any]], payload: Dict[str, Any]) -> None:
+        if not cb:
+            return
+        try:
+            result = cb(payload)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:
+            # Progress updates should never break core flow
+            return
 
     def _schema(self, model_cls: Any) -> Dict[str, Any]:
         """
@@ -371,7 +381,10 @@ class CyclingTripAgent:
         return messages, user_msg
 
     async def _run_tool_loop(
-        self, conversation_id: str, messages: List[Dict[str, Any]]
+        self,
+        conversation_id: str,
+        messages: List[Dict[str, Any]],
+        progress_cb: Optional[Callable[[Dict[str, Any]], Any]] = None,
     ) -> tuple[List[Dict[str, Any]], Dict[str, Any], Any, List[Dict[str, Any]]]:
         plan: Dict[str, Any] = {}
         tool_round = 0
@@ -382,6 +395,7 @@ class CyclingTripAgent:
         last_response = await self._call_llm(
             messages=messages, tools=self.tool_specs, system=TOOL_SYSTEM_PROMPT
         )
+        await self._emit_progress(progress_cb, {"stage": "llm_response_received"})
 
         while tool_round < total_rounds_allowed:
             tool_calls = [
@@ -403,6 +417,7 @@ class CyclingTripAgent:
             )
 
             if not tool_calls:
+                await self._emit_progress(progress_cb, {"stage": "no_tool_calls"})
                 break
 
             tool_round += 1
@@ -411,6 +426,11 @@ class CyclingTripAgent:
                 call_name = self._block_attr(call, "name")
                 call_id = self._block_attr(call, "id")
                 call_input = self._block_attr(call, "input") or {}
+                if call_name:
+                    await self._emit_progress(
+                        progress_cb,
+                        {"stage": "calling_tool", "tool": call_name, "id": call_id, "round": tool_round},
+                    )
                 if not call_name:
                     continue
                 if not call_input:
@@ -426,6 +446,10 @@ class CyclingTripAgent:
                             "tool_use_id": call_id,
                             "content": [{"type": "text", "text": error_msg}],
                         }
+                    )
+                    await self._emit_progress(
+                        progress_cb,
+                        {"stage": "tool_result", "tool": call_name, "id": call_id, "ok": False, "reason": "missing_input"},
                     )
                     continue
                 try:
@@ -444,6 +468,10 @@ class CyclingTripAgent:
                             "content": [{"type": "text", "text": error_msg}],
                         }
                     )
+                    await self._emit_progress(
+                        progress_cb,
+                        {"stage": "tool_result", "tool": call_name, "id": call_id, "ok": False, "reason": "validation_error"},
+                    )
                     continue
                 except Exception as exc:  # catch-all to avoid crashing the loop
                     error_msg = f"Execution failed for {call_name}: {exc}"
@@ -458,6 +486,10 @@ class CyclingTripAgent:
                             "tool_use_id": call_id,
                             "content": [{"type": "text", "text": error_msg}],
                         }
+                    )
+                    await self._emit_progress(
+                        progress_cb,
+                        {"stage": "tool_result", "tool": call_name, "id": call_id, "ok": False, "reason": "execution_error"},
                     )
                     continue
                 existing = plan.get(call_name)
@@ -480,12 +512,17 @@ class CyclingTripAgent:
                     "tool_result",
                     {"name": call_name, "id": call_id, "output": output},
                 )
+                await self._emit_progress(
+                    progress_cb,
+                    {"stage": "tool_result", "tool": call_name, "id": call_id, "ok": True},
+                )
 
             messages.append({"role": "assistant", "content": last_response.content})
             messages.append({"role": "user", "content": tool_results_payload})
             last_response = await self._call_llm(
                 messages=messages, tools=self.tool_specs, system=TOOL_SYSTEM_PROMPT
             )
+            await self._emit_progress(progress_cb, {"stage": "llm_response_received"})
 
         # If we exhausted retries and still have dangling tool_use, strip them to avoid parser errors
         dangling_tool_use = [
@@ -501,7 +538,9 @@ class CyclingTripAgent:
                 item for item in last_response.content if self._block_type(item) != "tool_use"
             ]
             last_response.content = cleaned
+            await self._emit_progress(progress_cb, {"stage": "dangling_tool_calls_stripped", "count": len(dangling_tool_use)})
 
+        await self._emit_progress(progress_cb, {"stage": "tool_loop_complete", "rounds": tool_round})
         return messages, plan, last_response, tool_calls
 
     async def _finalize_response(
@@ -511,9 +550,11 @@ class CyclingTripAgent:
         last_response: Any,
         plan: Dict[str, Any],
         tool_calls: List[Dict[str, Any]],
+        progress_cb: Optional[Callable[[Dict[str, Any]], Any]] = None,
     ) -> tuple[str, Dict[str, Any], Optional[List[str]], Optional[List[str]]]:
         # The structured call must NOT have a prefilled assistant turn last.
         # We pass the conversation up to the last user/tool_result message.
+        await self._emit_progress(progress_cb, {"stage": "parsing_structured"})
         structured = await self._call_llm_structured(
             messages=messages, system=STRUCTURED_SYSTEM_PROMPT, conversation_id=conversation_id
         )
@@ -542,7 +583,15 @@ class CyclingTripAgent:
         if trip_plan:
             if adjustments:
                 trip_plan = self._apply_adjustments(trip_plan, adjustments)
-            
+            await self._emit_progress(
+                progress_cb,
+                {"stage": "assembling_trip_plan", "has_plan": True, "adjusted": bool(adjustments)},
+            )
+        else:
+            await self._emit_progress(
+                progress_cb,
+                {"stage": "assembling_trip_plan", "has_plan": False},
+            )
 
         if not trip_plan and not tool_calls and not questions:
             questions = [
@@ -565,20 +614,26 @@ class CyclingTripAgent:
 
         return reply_text, trip_plan, questions, tool_calls_structured
 
-    async def chat(self, conversation_id: str, user_message: str) -> dict:
+    async def chat(
+        self,
+        conversation_id: str,
+        user_message: str,
+        progress_cb: Optional[Callable[[Dict[str, Any]], Any]] = None,
+    ) -> dict:
         """
         Runs a full tool-enabled exchange with Anthropic: send the user
         message, execute any requested tools, and return the assistant reply
         plus the tool outputs used to form the plan.
         """
+        await self._emit_progress(progress_cb, {"stage": "start"})
         messages, user_msg = self._build_initial_messages(conversation_id, user_message)
         messages, plan, last_response, tool_calls = await self._run_tool_loop(
-            conversation_id, messages
+            conversation_id, messages, progress_cb=progress_cb
         )
 
 
         reply_text, triplan, questions, tool_calls_structured = await self._finalize_response(
-            conversation_id, messages, last_response, plan, tool_calls
+            conversation_id, messages, last_response, plan, tool_calls, progress_cb=progress_cb
         )
 
         assistant_msg = MemoryMessage(
@@ -600,6 +655,15 @@ class CyclingTripAgent:
                 "plan_keys": list((plan or {}).keys()),
                 "questions": questions or [],
                 "tool_calls_structured": tool_calls_structured or [],
+            },
+        )
+        await self._emit_progress(
+            progress_cb,
+            {
+                "stage": "complete",
+                "reply": reply_text,
+                "has_plan": bool(triplan),
+                "has_questions": bool(questions),
             },
         )
 

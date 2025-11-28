@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cycle Planner Stream Tester</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --accent: #22d3ee;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --border: #1f2937;
+    }
+    body {
+      margin: 0;
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at 20% 20%, #0b1220, #0f172a 45%), radial-gradient(circle at 80% 0%, #0b1725, #0f172a 50%);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      padding: 40px 12px;
+    }
+    .shell {
+      width: min(900px, 100%);
+      background: linear-gradient(145deg, #0d1526 0%, #0b1220 100%);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 24px;
+      box-shadow: 0 15px 60px rgba(0, 0, 0, 0.35);
+    }
+    h1 {
+      margin: 0 0 8px 0;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+    p.desc {
+      margin: 0 0 18px 0;
+      color: var(--muted);
+    }
+    label {
+      display: block;
+      font-size: 14px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    input, textarea {
+      width: 100%;
+      box-sizing: border-box;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 12px;
+      border-radius: 8px;
+      outline: none;
+    }
+    input:focus, textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.2);
+    }
+    textarea {
+      min-height: 90px;
+      resize: vertical;
+      line-height: 1.5;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    button {
+      background: linear-gradient(90deg, #22d3ee, #14b8a6);
+      color: #0f172a;
+      font-weight: 700;
+      border: none;
+      padding: 12px 16px;
+      border-radius: 10px;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    pre {
+      background: #0b1220;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      color: #e5e7eb;
+      line-height: 1.4;
+      overflow: auto;
+      max-height: 360px;
+    }
+    .log {
+      margin-top: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <h1>Cycle Planner Stream Tester</h1>
+    <p class="desc">Send a prompt to the FastAPI service and view streaming progress events.</p>
+
+    <label for="apiUrl">API base URL</label>
+    <input id="apiUrl" value="http://localhost:8000" />
+
+    <div class="row">
+      <div>
+        <label for="conv">Conversation ID</label>
+        <input id="conv" value="demo-{{timestamp}}" />
+      </div>
+      <div>
+        <label for="message">Message</label>
+        <input id="message" value="Plan a 2-day ride from Lyon to Grenoble at 70 km/day" />
+      </div>
+    </div>
+
+    <label for="customPrompt">Custom prompt (optional)</label>
+    <textarea id="customPrompt" placeholder="Enter a longer prompt here..."></textarea>
+
+    <button id="send">Send & Stream</button>
+
+    <div class="log">
+      <label>Event log</label>
+      <pre id="log"></pre>
+    </div>
+  </div>
+
+  <script>
+    const logEl = document.getElementById("log");
+    const btn = document.getElementById("send");
+
+    function log(line) {
+      logEl.textContent += line + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function replaceVars(str) {
+      const ts = Date.now();
+      return str.replace("{{timestamp}}", ts);
+    }
+
+    btn.onclick = () => {
+      logEl.textContent = "";
+      const base = document.getElementById("apiUrl").value.trim().replace(/\/$/, "");
+      const conv = replaceVars(document.getElementById("conv").value.trim());
+      const msgShort = document.getElementById("message").value.trim();
+      const msgLong = document.getElementById("customPrompt").value.trim();
+      const message = encodeURIComponent(msgLong || msgShort || "Plan a 2-day ride from Lyon to Grenoble at 70 km/day");
+      const url = `${base}/chat/stream?conversation_id=${encodeURIComponent(conv)}&message=${message}`;
+
+      log(`Connecting to ${url}`);
+      btn.disabled = true;
+      const es = new EventSource(url);
+
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          log(`EVENT: ${JSON.stringify(data)}`);
+          if (data.stage === "done" || data.stage === "error") {
+            es.close();
+            btn.disabled = false;
+          }
+        } catch (err) {
+          log("Failed to parse event: " + err);
+        }
+      };
+
+      es.onerror = (err) => {
+        log("Stream error. See console for details.");
+        console.error(err);
+        es.close();
+        btn.disabled = false;
+      };
+    };
+  </script>
+</body>
+</html>
