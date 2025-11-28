@@ -41,3 +41,10 @@ Tool-aware cycling trip planner that uses Anthropic's Messages API plus a suite 
 - Architecture: `docs/architecture.md`
 - Flow of code: `docs/flow-of-code.md`
 - Example prompts: `docs/example-prompts.md`
+
+### If We Had More Time
+- Add tests around each tool (including mocked APIs) to lock behavior and validate schemas.
+- Swap mocked tools to live, real-time providers where available.
+- Move conversation memory to a shared store like Redis for multi-process workers.
+- Offer an SSE streaming variant of the `/chat` API for incremental responses.
+- Deploy the backend (with a minimal UI) to a hosted platform for easy demos.

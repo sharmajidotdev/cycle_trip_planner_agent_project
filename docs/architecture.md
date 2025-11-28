@@ -1,36 +1,23 @@
-# Cycle Planner Architecture
+## Core Shape
+- Single FastAPI app (`src/api/main.py`) exposes one POST `/chat` endpoint that forwards validated requests into the agent and returns the reply, optional `TripPlan`, clarifying questions, and tool call hints.
+- All shared data contracts live in `src/models/schemas.py` (chat payloads, itinerary pieces, tool inputs/outputs), so tools and the API reuse the same Pydantic models.
+- Docker-first: `Dockerfile` builds a uvicorn container (requires `ANTHROPIC_API_KEY` at build time); `docker-compose.yml` wires env, port 8000, and restart policy.
 
-## Overview
-- **Purpose:** Tool-aware cycling trip planner that orchestrates Anthropic's Messages API with a suite of mocked/low-cost tools to produce day-by-day itineraries.
-- **Entry point:** FastAPI service at `src/api/main.py` exposes `POST /chat`, wiring requests into `CyclingTripAgent`.
-- **Key behaviors:** Gathers user requirements, calls tools when inputs are sufficient, reconciles results into a normalized `TripPlan`, and returns a concise reply plus structured plan data.
+## Agent Workflow (Two-Shot)
+- The agent runs a two-pass loop: first pass drives tool use with `TOOL_SYSTEM_PROMPT`, executing any requested tools and feeding back `tool_result` blocks; second pass replays the conversation (minus the last assistant turn) with `STRUCTURED_SYSTEM_PROMPT` to parse a concise, structured `ChatLLMResponse`.
+- Tool specs are derived from the Pydantic input models, so LLM tool calls are schema-aligned.
+- A fallback trip plan assembler reconstructs a `TripPlan` from gathered tool outputs and will fabricate a safe reply/questions if parsing fails or tools return nothing.
 
-## Components
-- **API layer (`src/api/main.py`):** FastAPI app that loads environment variables, initializes the Anthropic client (if `ANTHROPIC_API_KEY` is set), and forwards chat requests to the agent.
-- **Agent core (`src/agent/agent.py`):** Coordinates message construction, tool invocation, error handling, plan assembly, and memory updates. It normalizes tool outputs into `TripPlan` objects and supports structured output parsing.
-- **Prompts (`src/agent/prompts.py`):** System prompts defining tool-use rules and structured output contract.
-- **Conversation memory (`src/agent/memory.py`):** Simple in-process store that caps history and tracks lightweight per-conversation state (`last_plan_summary`).
-- **Logging (`src/agent/logger.py`):** Appends structured JSON log lines to `agent.log` or `AGENT_LOG_PATH`.
-- **Models (`src/models/schemas.py`):** Pydantic schemas for tool inputs/outputs and chat responses (e.g., `RouteRequest`, `TripPlan`, `ChatLLMResponse`).
-- **Tools (`src/tools/*`):** Small async helpers for route planning, accommodation, weather, elevation, POIs, visa checks, and budget estimation. External lookups try free/open APIs first, then fall back to deterministic mocks to keep responses stable.
+## Memory and Logging
+- Each process keeps per-conversation memory in `InMemoryConversationMemory`, storing every user/assistant message (and tool results) in Claude Messages format via `MemoryMessage` and `to_claude_messages`.
+- State such as the last plan summary is also cached per conversation to influence future turns.
+- A lightweight logger (`src/agent/logger.py`) appends JSONL events to `agent.log` (path configurable via `AGENT_LOG_PATH`), capturing user messages, tool calls/results, parse errors, and replies.
 
-## External Dependencies and Fallbacks
-- **Anthropic:** Used for both tool-use and structured parsing (`ANTHROPIC_API_KEY` required). Optional overrides: `ANTHROPIC_MODEL`, `ANTHROPIC_STRUCTURED_BETA`.
-- **Open-Meteo APIs:** Geocoding, reverse geocoding, and daily forecasts (weather). All fail soft and revert to mocked data.
-- **OSRM Routing:** Attempts to split cycling routes into day stops using OSRM's free endpoint; falls back to generated segments on any error.
-- **Overpass API:** Queries lodging POIs near a stop; falls back to generated accommodation options on error.
-- **Fully mocked tools:** Elevation, POIs, visa checks, and budget estimation do not call external services.
-- **Dependencies:** Pinned in `requirements.txt`; install with `pip install -r requirements.txt` inside a virtual environment.
+## Tooling Surface
+- External-first tools: route planning uses OSRM with geocoding fallbacks (`src/tools/route.py`), weather uses Open-Meteo (`src/tools/weather.py`), and accommodation search hits Overpass/OSM (`src/tools/accomodation.py`), each falling back to deterministic mocks for stability. Budget estimation is an in-process mock that derives costs from itinerary/context.
+- Mock-only tools: elevation profile (`src/tools/elevation.py`), points of interest (`src/tools/poi.py`), and visa requirements (`src/tools/visa.py`) return deterministic sample data to keep responses stable offline.
+- Tool errors/validation issues are returned to the model as tool results, and dangling `tool_use` blocks are stripped before structured parsing to avoid failures.
 
-## Data Flow Snapshot
-1) Client `POST /chat` with `conversation_id` and `message`.
-2) Agent builds the message stack from prior memory and current user input.
-3) Anthropic model runs with tool specs; returned `tool_use` blocks are executed against local tools.
-4) Tool outputs are aggregated and sent back through the model for a final response (tool loop with safeguards).
-5) Structured output is parsed; `TripPlan` is assembled and adjusted if needed; memory and logs are updated.
-6) API returns `reply`, optional `triplan`, clarifying `questions`, and `tool_calls` metadata.
-
-## Safeguards
-- Tool loop caps primary rounds (4) with limited cleanup retries to avoid runaway calls.
-- Validation errors from Pydantic inputs are logged and surfaced to the model as tool results.
-- Dangling tool calls are stripped before structured parsing to prevent parser errors.
+## Resilience and Fallbacks
+- If the structured LLM parse fails, the agent falls back to concatenated text from the last assistant turn and still attempts to return clarifying questions.
+- When no plan can be built, the agent seeds default clarifying questions (start/end, distances, dates, lodging, weather constraints) to unblock the next turn.
