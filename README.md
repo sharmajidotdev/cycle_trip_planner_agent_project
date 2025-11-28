@@ -19,7 +19,7 @@ Tool-aware cycling trip planner that uses Anthropic's Messages API plus a suite 
    - Optional: `ANTHROPIC_MODEL`, `ANTHROPIC_STRUCTURED_BETA`, `AGENT_LOG_PATH`
 5. Start the API server:
    ```bash
-   uvicorn src.api.main:app --reload
+   uvicorn api.main:app --reload --app-dir src
    ```
 6. Send a request:
    ```bash
