@@ -28,6 +28,15 @@ Tool-aware cycling trip planner that uses Anthropic's Messages API plus a suite 
      -d '{"conversation_id":"demo-1","message":"Plan a 3-day ride from Lyon to Grenoble at 70 km per day"}'
    ```
 
+### Run with Docker Compose
+1. Copy `.env.example` to `.env` and fill in your values.
+   - `ANTHROPIC_API_KEY` is required at build time; `docker compose` forwards it as a build arg.
+2. Build and start:
+   ```bash
+   docker compose up --build
+   ```
+3. The API will be available at `http://localhost:8000`.
+
 ### Documentation
 - Architecture: `docs/architecture.md`
 - Flow of code: `docs/flow-of-code.md`

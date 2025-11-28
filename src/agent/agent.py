@@ -313,6 +313,9 @@ class CyclingTripAgent:
                 output_format=ChatLLMResponse,
                 betas=[beta],
             )
+            print("stop_reason:", resp.stop_reason)
+            print("raw:", resp.content[0].text)
+            print("parsed:", resp.parsed_output)
             return resp.parsed_output
         except Exception as exc:
             log_event(
