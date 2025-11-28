@@ -72,6 +72,24 @@ class ElevationResponse(BaseModel):
     profile: list[ElevationProfile]
 
 
+class POIRequest(BaseModel):
+    location: str
+    day: int
+
+
+class PointOfInterest(BaseModel):
+    name: str
+    category: str
+    description: str | None = None
+    relevance: str | None = None
+
+
+class POIResponse(BaseModel):
+    day: int
+    location: str
+    pois: list[PointOfInterest]
+
+
 class ChatLLMResponse(BaseModel):
     reply: str | None = None
     plan: dict | None = None
@@ -86,6 +104,8 @@ class DayPlan(BaseModel):
     distance_km: float
     accommodation: list[AccommodationOption] | None = None
     weather: WeatherDaily | None = None
+    elevation: ElevationProfile | None = None
+    points_of_interest: list[PointOfInterest] | None = None
     notes: str | None = None
 
 

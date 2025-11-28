@@ -14,11 +14,14 @@ from models.schemas import (
     ChatLLMResponse,
     DayPlan,
     ElevationRequest,
+    ElevationProfile,
+    POIRequest,
+    PointOfInterest,
     RouteRequest,
     TripPlan,
     WeatherRequest,
 )
-from tools import accomodation, elevation, route, weather
+from tools import accomodation, elevation, poi, route, weather
 
 
 class CyclingTripAgent:
@@ -34,12 +37,14 @@ class CyclingTripAgent:
             "find_accommodation": accomodation.find_accommodation,
             "get_weather": weather.get_weather,
             "get_elevation_profile": elevation.get_elevation_profile,
+            "get_points_of_interest": poi.get_points_of_interest,
         }
         self.tool_input_models: Dict[str, Any] = {
             "get_route": RouteRequest,
             "find_accommodation": AccommodationRequest,
             "get_weather": WeatherRequest,
             "get_elevation_profile": ElevationRequest,
+            "get_points_of_interest": POIRequest,
         }
         self.tool_specs = self._build_tool_specs()
         self.memory = InMemoryConversationMemory(max_messages=50)
@@ -95,6 +100,32 @@ class CyclingTripAgent:
                     if day_idx is not None:
                         weather_by_day[day_idx] = entry
 
+        elevation_data = plan.get("get_elevation_profile")
+        if elevation_data is None:
+            elevation_data = []
+        if not isinstance(elevation_data, list):
+            elevation_data = [elevation_data]
+        elevation_by_day = {}
+        for item in elevation_data:
+            if isinstance(item, dict):
+                profiles = item.get("profile") or []
+                for entry in profiles:
+                    day_idx = entry.get("day")
+                    if day_idx is not None:
+                        elevation_by_day[day_idx] = entry
+
+        poi_data = plan.get("get_points_of_interest")
+        if poi_data is None:
+            poi_data = []
+        if not isinstance(poi_data, list):
+            poi_data = [poi_data]
+        poi_by_day = {}
+        for item in poi_data:
+            if isinstance(item, dict):
+                day_idx = item.get("day")
+                if day_idx is not None:
+                    poi_by_day[day_idx] = item.get("pois")
+
         itinerary: List[DayPlan] = []
         for seg in segments:
             if not isinstance(seg, dict):
@@ -110,6 +141,8 @@ class CyclingTripAgent:
                     distance_km=seg.get("distance_km", 0.0),
                     accommodation=accom_by_day.get(day_idx),
                     weather=weather_by_day.get(day_idx),
+                    elevation=elevation_by_day.get(day_idx),
+                    points_of_interest=poi_by_day.get(day_idx),
                     notes=seg.get("notes"),
                 )
             )
@@ -144,6 +177,11 @@ class CyclingTripAgent:
                 "name": "get_elevation_profile",
                 "description": "Get terrain difficulty — elevation gain, elevation loss, and a simple difficulty rating for a given location/day. Use this to summarize hilliness or effort expectations for each trip day. Parameters: `location` and `day`. Mocked data; no live terrain API calls.",
                 "input_schema": self._schema(ElevationRequest),
+            },
+            {
+                "name": "get_points_of_interest",
+                "description": "Provide nearby points of interest (landmarks, parks, museums, viewpoints, food) for a given location/day. Use this to enrich daily plans with suggested stops. Parameters: `location` and `day`. Mocked data only; no live API.",
+                "input_schema": self._schema(POIRequest),
             },
         ]
 
