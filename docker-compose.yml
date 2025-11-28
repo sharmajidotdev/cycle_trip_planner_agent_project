@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    container_name: cycle-planner
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    restart: unless-stopped

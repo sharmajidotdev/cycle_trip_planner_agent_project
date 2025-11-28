@@ -35,7 +35,6 @@ instance/*
 
 # Local config files
 *.env
-*.env.*
 config.py
 
 # pytest
@@ -64,11 +63,6 @@ logs/
 # Databases
 *.sqlite3
 *.db
-
-# Docker
-*.dockerignore
-Dockerfile
-docker-compose.yml
 
 # Misc
 *.swp
