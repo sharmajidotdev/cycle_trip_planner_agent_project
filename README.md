@@ -42,7 +42,7 @@ Tool-aware cycling trip planner that uses Anthropic's Messages API plus a suite 
 - Flow of code: `docs/flow-of-code.md`
 - Example prompts: `docs/example-prompts.md`
 
-### If We Had More Time
+### Furthur work
 - Add tests to lock behavior and validate schemas ( Currently the tests are AI generated and not verified thoroughly ).
 - Swap mocked tools to live, real-time providers where available.
 - Move conversation memory to a shared store like Redis for multi-process workers.
